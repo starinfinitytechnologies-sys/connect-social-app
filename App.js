@@ -1,18 +1,25 @@
 import React from 'react';
-import { Modal, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, Modal, StyleSheet, Text, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { DefaultTheme, NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
+import { createNativeStackNavigator } from '@react-navigation/native-stack';
+import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { AppProvider, useApp } from './src/context/AppContext';
-import ConnectionsScreen from './src/screens/ConnectionsScreen';
+import { AuthProvider, useAuth } from './src/context/AuthContext';
+import AuthScreen from './src/screens/AuthScreen';
 import ChatScreen from './src/screens/ChatScreen';
+import ConnectionsScreen from './src/screens/ConnectionsScreen';
 import DiscoveryScreen from './src/screens/DiscoveryScreen';
+import ProfessionalProfileScreen from './src/screens/ProfessionalProfileScreen';
+import SavedScreen from './src/screens/SavedScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
 import SubscriptionModal from './src/screens/SubscriptionModal';
 import { COLORS, SHADOWS } from './src/theme';
 
 const Tab = createBottomTabNavigator();
+const Stack = createNativeStackNavigator();
 
 const navigationTheme = {
   ...DefaultTheme,
@@ -27,74 +34,43 @@ const navigationTheme = {
   },
 };
 
-function DiscoverIcon({ color }) {
-  return (
-    <View style={styles.iconCanvas}>
-      <View style={[styles.searchCircle, { borderColor: color }]} />
-      <View style={[styles.searchHandle, { backgroundColor: color }]} />
-    </View>
-  );
-}
-
-function ConnectionsIcon({ color }) {
-  return (
-    <View style={styles.iconCanvas}>
-      <View style={[styles.personHead, { backgroundColor: color, left: 3 }]} />
-      <View style={[styles.personBody, { backgroundColor: color, left: 1 }]} />
-      <View
-        style={[styles.personHead, { backgroundColor: color, left: 13, opacity: 0.5 }]}
-      />
-      <View
-        style={[styles.personBody, { backgroundColor: color, left: 11, opacity: 0.5 }]}
-      />
-    </View>
-  );
-}
-
-function SettingsIcon({ color }) {
-  const knobPositions = [1, 11, 6];
-
-  return (
-    <View style={styles.slidersIcon}>
-      {knobPositions.map((left, index) => (
-        <View key={index} style={styles.sliderTrack}>
-          <View style={[styles.sliderLine, { backgroundColor: color }]} />
-          <View style={[styles.sliderKnob, { backgroundColor: color, left }]} />
-        </View>
-      ))}
-    </View>
-  );
-}
-
-function TabIcon({ name, color, focused }) {
-  return (
-    <View style={[styles.tabIconBubble, focused && styles.tabIconBubbleActive]}>
-      {name === 'Discover' ? <DiscoverIcon color={color} /> : null}
-      {name === 'Connections' ? <ConnectionsIcon color={color} /> : null}
-      {name === 'Settings' ? <SettingsIcon color={color} /> : null}
-    </View>
-  );
-}
+const TAB_ICONS = {
+  Discover: ['compass', 'compass-outline'],
+  Saved: ['bookmark', 'bookmark-outline'],
+  Connections: ['chatbubbles', 'chatbubbles-outline'],
+  Settings: ['settings', 'settings-outline'],
+};
 
 function Tabs() {
   const { pendingCount } = useApp();
 
   return (
     <Tab.Navigator
-      screenOptions={({ route }) => ({
-        headerShown: false,
-        tabBarActiveTintColor: COLORS.primary,
-        tabBarInactiveTintColor: COLORS.textSubtle,
-        tabBarStyle: styles.tabBar,
-        tabBarItemStyle: styles.tabBarItem,
-        tabBarLabelStyle: styles.tabBarLabel,
-        tabBarHideOnKeyboard: true,
-        tabBarIcon: ({ color, focused }) => (
-          <TabIcon name={route.name} color={color} focused={focused} />
-        ),
-      })}
+      screenOptions={({ route }) => {
+        const [activeIcon, inactiveIcon] = TAB_ICONS[route.name];
+
+        return {
+          headerShown: false,
+          tabBarActiveTintColor: COLORS.primary,
+          tabBarInactiveTintColor: COLORS.textSubtle,
+          tabBarStyle: styles.tabBar,
+          tabBarItemStyle: styles.tabBarItem,
+          tabBarLabelStyle: styles.tabBarLabel,
+          tabBarHideOnKeyboard: true,
+          tabBarIcon: ({ color, focused, size }) => (
+            <View style={[styles.tabIcon, focused && styles.tabIconActive]}>
+              <Ionicons
+                name={focused ? activeIcon : inactiveIcon}
+                size={size - 2}
+                color={color}
+              />
+            </View>
+          ),
+        };
+      }}
     >
       <Tab.Screen name="Discover" component={DiscoveryScreen} />
+      <Tab.Screen name="Saved" component={SavedScreen} />
       <Tab.Screen
         name="Connections"
         component={ConnectionsScreen}
@@ -105,6 +81,19 @@ function Tabs() {
       />
       <Tab.Screen name="Settings" component={SettingsScreen} />
     </Tab.Navigator>
+  );
+}
+
+function RootNavigator() {
+  return (
+    <Stack.Navigator screenOptions={{ headerShown: false }}>
+      <Stack.Screen name="Main" component={Tabs} />
+      <Stack.Screen
+        name="ProfessionalProfile"
+        component={ProfessionalProfileScreen}
+        options={{ animation: 'slide_from_right' }}
+      />
+    </Stack.Navigator>
   );
 }
 
@@ -129,7 +118,7 @@ function AppShell() {
   return (
     <View style={styles.app}>
       <NavigationContainer theme={navigationTheme}>
-        <Tabs />
+        <RootNavigator />
       </NavigationContainer>
       <ChatOverlay />
       <SubscriptionModal />
@@ -137,13 +126,42 @@ function AppShell() {
   );
 }
 
+function SessionSplash({ label }) {
+  return (
+    <View style={styles.splash}>
+      <View style={styles.splashMark}>
+        <Ionicons name="location" size={26} color={COLORS.surface} />
+      </View>
+      <Text style={styles.splashTitle}>Connect Local</Text>
+      <Text style={styles.splashLabel}>{label}</Text>
+      <ActivityIndicator color={COLORS.primary} style={styles.splashSpinner} />
+    </View>
+  );
+}
+
+function AppGate() {
+  const { configured, loading, session, recoveryMode, profileLoading, profile } =
+    useAuth();
+
+  if (!configured) return <AppShell />;
+  if (loading) return <SessionSplash label="Checking your session" />;
+  if (!session || recoveryMode) return <AuthScreen />;
+  if (profileLoading && !profile) {
+    return <SessionSplash label="Loading your account" />;
+  }
+
+  return <AppShell />;
+}
+
 export default function App() {
   return (
     <SafeAreaProvider>
-      <AppProvider>
-        <StatusBar style="dark" />
-        <AppShell />
-      </AppProvider>
+      <AuthProvider>
+        <AppProvider>
+          <StatusBar style="dark" />
+          <AppGate />
+        </AppProvider>
+      </AuthProvider>
     </SafeAreaProvider>
   );
 }
@@ -153,6 +171,38 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: COLORS.background,
   },
+  splash: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: COLORS.background,
+    paddingHorizontal: 24,
+  },
+  splashMark: {
+    width: 58,
+    height: 58,
+    borderRadius: 20,
+    backgroundColor: COLORS.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...SHADOWS.floating,
+  },
+  splashTitle: {
+    color: COLORS.text,
+    fontSize: 22,
+    fontWeight: '800',
+    letterSpacing: -0.5,
+    marginTop: 16,
+  },
+  splashLabel: {
+    color: COLORS.textMuted,
+    fontSize: 12,
+    fontWeight: '500',
+    marginTop: 5,
+  },
+  splashSpinner: {
+    marginTop: 18,
+  },
   chatModal: {
     flex: 1,
     backgroundColor: COLORS.background,
@@ -161,7 +211,7 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.surface,
     borderTopWidth: 1,
     borderTopColor: COLORS.border,
-    paddingTop: 7,
+    paddingTop: 6,
     ...SHADOWS.soft,
     shadowOffset: { width: 0, height: -4 },
     shadowOpacity: 0.04,
@@ -169,21 +219,21 @@ const styles = StyleSheet.create({
     elevation: 12,
   },
   tabBarItem: {
-    paddingBottom: 3,
+    paddingBottom: 4,
   },
   tabBarLabel: {
-    fontSize: 10,
+    fontSize: 9.5,
     fontWeight: '700',
     letterSpacing: 0.1,
   },
-  tabIconBubble: {
+  tabIcon: {
     width: 38,
     height: 28,
     borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  tabIconBubbleActive: {
+  tabIconActive: {
     backgroundColor: COLORS.primarySoft,
   },
   badge: {
@@ -194,69 +244,5 @@ const styles = StyleSheet.create({
     minWidth: 17,
     height: 17,
     lineHeight: 16,
-  },
-  iconCanvas: {
-    width: 24,
-    height: 24,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  searchCircle: {
-    position: 'absolute',
-    top: 3,
-    left: 3,
-    width: 14,
-    height: 14,
-    borderRadius: 7,
-    borderWidth: 2,
-  },
-  searchHandle: {
-    position: 'absolute',
-    top: 15,
-    left: 16,
-    width: 2,
-    height: 7,
-    borderRadius: 1,
-    transform: [{ rotate: '-45deg' }],
-  },
-  personHead: {
-    position: 'absolute',
-    top: 3,
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-  },
-  personBody: {
-    position: 'absolute',
-    bottom: 3,
-    width: 13,
-    height: 8,
-    borderTopLeftRadius: 7,
-    borderTopRightRadius: 7,
-  },
-  slidersIcon: {
-    width: 22,
-    height: 22,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 2,
-  },
-  sliderTrack: {
-    width: 22,
-    height: 5,
-    justifyContent: 'center',
-  },
-  sliderLine: {
-    width: 22,
-    height: 2,
-    borderRadius: 1,
-    opacity: 0.75,
-  },
-  sliderKnob: {
-    position: 'absolute',
-    top: 0,
-    width: 5,
-    height: 5,
-    borderRadius: 2.5,
   },
 });

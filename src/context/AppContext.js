@@ -7,6 +7,7 @@ import React, {
   useRef,
   useState,
 } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Location from 'expo-location';
 import {
   CURRENT_USER,
@@ -14,8 +15,13 @@ import {
   PROFESSIONALS,
   createInitialRelationships,
 } from '../data/mockData';
+import { DEFAULT_LOCATION, formatLocationLabel } from '../data/locations';
+import { distanceInKm } from '../utils/geo';
+import { PLAN_CATALOGUE } from '../config/plans';
+import { useAuth } from './AuthContext';
 
 const AppContext = createContext(null);
+const STORAGE_KEY = 'connect-local:app-state:v1';
 
 const EMPTY_RELATION = {
   status: 'none',
@@ -24,16 +30,20 @@ const EMPTY_RELATION = {
 };
 
 function formatPlace(place) {
-  if (!place) return '';
+  if (!place) return null;
 
   const area = place.district || place.subregion || place.name;
   const city = place.city || place.region;
 
-  if (area && city && area.toLowerCase() !== city.toLowerCase()) {
-    return `${area}, ${city}`;
-  }
-
-  return city || area || place.region || '';
+  return {
+    area,
+    city,
+    state: place.region,
+    label:
+      area && city && area.toLowerCase() !== city.toLowerCase()
+        ? `${area}, ${city}`
+        : city || area || 'Current location',
+  };
 }
 
 function formatTime(date) {
@@ -45,30 +55,86 @@ function formatTime(date) {
 }
 
 export function AppProvider({ children }) {
+  const {
+    profile: authProfile,
+    user: authUser,
+    configured: isBackendConfigured,
+  } = useAuth();
   const [plan, setPlan] = useState('free');
   const [credits, setCredits] = useState(INITIAL_CREDITS);
   const [relationships, setRelationships] = useState(createInitialRelationships);
+  const [favouriteIds, setFavouriteIds] = useState([]);
+  const [recentIds, setRecentIds] = useState([]);
+  const [enquiries, setEnquiries] = useState([]);
+  const [reports, setReports] = useState([]);
+  const [blockedIds, setBlockedIds] = useState([]);
+  const [selectedLocation, setSelectedLocation] = useState(DEFAULT_LOCATION);
   const [isPaywallVisible, setPaywallVisible] = useState(false);
   const [activeChatId, setActiveChatId] = useState(null);
-  const [locationLabel, setLocationLabel] = useState('Locating you...');
-  const [locationStatus, setLocationStatus] = useState('loading');
+  const [locationStatus, setLocationStatus] = useState('idle');
   const [isRefreshingLocation, setRefreshingLocation] = useState(false);
+  const [hydrated, setHydrated] = useState(false);
   const locationRequest = useRef(false);
+
+  useEffect(() => {
+    let active = true;
+
+    async function hydrate() {
+      try {
+        const raw = await AsyncStorage.getItem(STORAGE_KEY);
+        if (raw && active) {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed.favouriteIds)) setFavouriteIds(parsed.favouriteIds);
+          if (Array.isArray(parsed.recentIds)) setRecentIds(parsed.recentIds);
+          if (Array.isArray(parsed.blockedIds)) setBlockedIds(parsed.blockedIds);
+          if (Array.isArray(parsed.enquiries)) setEnquiries(parsed.enquiries);
+          if (parsed.selectedLocation) {
+            setSelectedLocation({ ...parsed.selectedLocation, source: 'manual' });
+          }
+        }
+      } catch {
+        // A storage failure should never block the app from loading.
+      } finally {
+        if (active) setHydrated(true);
+      }
+    }
+
+    hydrate();
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!hydrated) return;
+
+    const payload = JSON.stringify({
+      favouriteIds,
+      recentIds,
+      blockedIds,
+      enquiries,
+      selectedLocation,
+    });
+
+    AsyncStorage.setItem(STORAGE_KEY, payload).catch(() => {
+      // Persistence is best-effort; the in-memory state remains usable.
+    });
+  }, [hydrated, favouriteIds, recentIds, blockedIds, enquiries, selectedLocation]);
 
   const refreshLocation = useCallback(async () => {
     if (locationRequest.current) return;
 
     locationRequest.current = true;
     setRefreshingLocation(true);
-    setLocationStatus((previous) => (previous === 'granted' ? previous : 'loading'));
+    setLocationStatus((previous) => (previous === 'granted' ? previous : 'locating'));
 
     try {
       const permission = await Location.requestForegroundPermissionsAsync();
 
       if (permission.status !== 'granted') {
         setLocationStatus('denied');
-        setLocationLabel('Location off');
-        return;
+        return { ok: false, reason: 'permission_denied' };
       }
 
       let position = await Location.getLastKnownPositionAsync();
@@ -84,57 +150,108 @@ export function AppProvider({ children }) {
         longitude: position.coords.longitude,
       });
 
-      setLocationLabel(formatPlace(addresses?.[0]) || 'Your area');
+      const place = formatPlace(addresses?.[0]);
+      const nextLocation = {
+        id: 'device',
+        label: place?.label || 'Current location',
+        area: place?.area || 'Current location',
+        city: place?.city || '',
+        state: place?.state || '',
+        latitude: position.coords.latitude,
+        longitude: position.coords.longitude,
+        source: 'device',
+      };
+
+      setSelectedLocation(nextLocation);
       setLocationStatus('granted');
+      return { ok: true, location: nextLocation };
     } catch {
       setLocationStatus('error');
-      setLocationLabel('Your area');
+      return { ok: false, reason: 'location_error' };
     } finally {
       setRefreshingLocation(false);
       locationRequest.current = false;
     }
   }, []);
 
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      refreshLocation();
-    }, 0);
-
-    return () => clearTimeout(timer);
-  }, [refreshLocation]);
+  const setManualLocation = useCallback((location) => {
+    if (!location) return;
+    setSelectedLocation({ ...location, source: location.source || 'manual' });
+    setLocationStatus('manual');
+  }, []);
 
   const professionals = useMemo(
     () =>
-      PROFESSIONALS.map((professional) => ({
-        ...professional,
-        relation: relationships[professional.id] || EMPTY_RELATION,
-      })),
-    [relationships]
+      PROFESSIONALS.map((professional) => {
+        const distanceKm = distanceInKm(
+          selectedLocation.latitude,
+          selectedLocation.longitude,
+          professional.latitude,
+          professional.longitude
+        );
+
+        return {
+          ...professional,
+          distanceKm,
+          withinServiceRadius: distanceKm <= professional.serviceRadiusKm,
+          relation: relationships[professional.id] || EMPTY_RELATION,
+        };
+      }),
+    [relationships, selectedLocation]
+  );
+
+  const professionalMap = useMemo(
+    () =>
+      professionals.reduce((accumulator, professional) => {
+        accumulator[professional.id] = professional;
+        return accumulator;
+      }, {}),
+    [professionals]
   );
 
   const incomingRequests = useMemo(
     () =>
       professionals.filter(
         (professional) =>
+          !blockedIds.includes(professional.id) &&
           professional.relation.status === 'pending' &&
           professional.relation.direction === 'incoming'
       ),
-    [professionals]
+    [blockedIds, professionals]
   );
 
   const outgoingRequests = useMemo(
     () =>
       professionals.filter(
         (professional) =>
+          !blockedIds.includes(professional.id) &&
           professional.relation.status === 'pending' &&
           professional.relation.direction === 'outgoing'
       ),
-    [professionals]
+    [blockedIds, professionals]
   );
 
   const connections = useMemo(
-    () => professionals.filter((professional) => professional.relation.status === 'accepted'),
-    [professionals]
+    () =>
+      professionals.filter(
+        (professional) =>
+          !blockedIds.includes(professional.id) &&
+          professional.relation.status === 'accepted'
+      ),
+    [blockedIds, professionals]
+  );
+
+  const favouriteProfessionals = useMemo(
+    () =>
+      favouriteIds
+        .map((professionalId) => professionalMap[professionalId])
+        .filter(Boolean),
+    [favouriteIds, professionalMap]
+  );
+
+  const recentlyViewedProfessionals = useMemo(
+    () => recentIds.map((professionalId) => professionalMap[professionalId]).filter(Boolean),
+    [recentIds, professionalMap]
   );
 
   const activeChat = useMemo(
@@ -142,10 +259,65 @@ export function AppProvider({ children }) {
     [professionals, activeChatId]
   );
 
-  const isPremium = plan === 'premium';
+  const isPaid = plan !== 'free';
+  const planConfig =
+    PLAN_CATALOGUE.find((item) => item.id === plan) || PLAN_CATALOGUE[0];
+  const isPremium = isPaid;
+
+  const currentUser = useMemo(() => {
+    if (!isBackendConfigured) return CURRENT_USER;
+
+    const name =
+      authProfile?.display_name ||
+      authProfile?.full_name ||
+      authUser?.user_metadata?.full_name ||
+      authUser?.email?.split('@')[0] ||
+      'Member';
+    const nameParts = name.trim().split(/\s+/).filter(Boolean);
+    const initials =
+      nameParts
+        .slice(0, 2)
+        .map((part) => part.charAt(0).toUpperCase())
+        .join('') || 'CL';
+
+    return {
+      id: authProfile?.id || authUser?.id,
+      name,
+      firstName: nameParts[0] || 'there',
+      initials,
+      profession:
+        authProfile?.role === 'professional' ? 'Professional' : 'Member',
+      role: authProfile?.role || 'customer',
+      city: authProfile?.city || '',
+      area: authProfile?.area || '',
+      avatarSoft: '#EEECFF',
+      avatarColor: '#5B4BFF',
+    };
+  }, [authProfile, authUser, isBackendConfigured]);
 
   const openPaywall = useCallback(() => setPaywallVisible(true), []);
   const closePaywall = useCallback(() => setPaywallVisible(false), []);
+
+  const spendCredit = useCallback(
+    (amount = 1) => {
+      if (isPaid) return { ok: true, charged: 0 };
+
+      if (credits < amount) {
+        setPaywallVisible(true);
+        return { ok: false, reason: 'no_credits', charged: 0 };
+      }
+
+      const nextCredits = credits - amount;
+      setCredits(nextCredits);
+
+      if (nextCredits === 0) {
+        setTimeout(() => setPaywallVisible(true), 550);
+      }
+
+      return { ok: true, charged: amount, remaining: nextCredits };
+    },
+    [credits, isPaid]
+  );
 
   const sendConnectionRequest = useCallback(
     (professionalId) => {
@@ -155,19 +327,12 @@ export function AppProvider({ children }) {
         return { ok: false, reason: 'existing' };
       }
 
-      if (!isPremium && credits <= 0) {
-        setPaywallVisible(true);
-        return { ok: false, reason: 'no_credits' };
+      if (blockedIds.includes(professionalId)) {
+        return { ok: false, reason: 'blocked' };
       }
 
-      if (!isPremium) {
-        const nextCredits = Math.max(0, credits - 1);
-        setCredits(nextCredits);
-
-        if (nextCredits === 0) {
-          setTimeout(() => setPaywallVisible(true), 550);
-        }
-      }
+      const payment = spendCredit(1);
+      if (!payment.ok) return payment;
 
       setRelationships((current) => ({
         ...current,
@@ -178,9 +343,9 @@ export function AppProvider({ children }) {
         },
       }));
 
-      return { ok: true };
+      return { ok: true, remaining: payment.remaining };
     },
-    [credits, isPremium, relationships]
+    [blockedIds, relationships, spendCredit]
   );
 
   const acceptRequest = useCallback((professionalId) => {
@@ -217,11 +382,13 @@ export function AppProvider({ children }) {
 
   const openChat = useCallback(
     (professionalId) => {
+      if (blockedIds.includes(professionalId)) return;
+
       if (relationships[professionalId]?.status === 'accepted') {
         setActiveChatId(professionalId);
       }
     },
-    [relationships]
+    [blockedIds, relationships]
   );
 
   const closeChat = useCallback(() => setActiveChatId(null), []);
@@ -253,44 +420,136 @@ export function AppProvider({ children }) {
     });
   }, []);
 
-  const purchasePlan = useCallback((planId) => {
-    if (planId === 'monthly') {
-      setPlan('premium');
-      return;
-    }
+  const sendEnquiry = useCallback(
+    (professionalId, message, options = {}) => {
+      const cleanMessage = String(message || '').trim();
 
-    if (planId === 'credits') {
-      setCredits((current) => current + 5);
-    }
+      if (cleanMessage.length < 10) {
+        return { ok: false, reason: 'too_short' };
+      }
+
+      if (blockedIds.includes(professionalId)) {
+        return { ok: false, reason: 'blocked' };
+      }
+
+      const payment = spendCredit(1);
+      if (!payment.ok) return payment;
+
+      const enquiry = {
+        id: `enq-${Date.now()}`,
+        professionalId,
+        message: cleanMessage,
+        serviceId: options.serviceId || null,
+        serviceName: options.serviceName || null,
+        createdAt: new Date().toISOString(),
+        status: 'recorded',
+      };
+
+      setEnquiries((current) => [enquiry, ...current]);
+
+      return { ok: true, enquiry, remaining: payment.remaining };
+    },
+    [blockedIds, spendCredit]
+  );
+
+  const toggleFavourite = useCallback((professionalId) => {
+    setFavouriteIds((current) =>
+      current.includes(professionalId)
+        ? current.filter((id) => id !== professionalId)
+        : [professionalId, ...current]
+    );
+  }, []);
+
+  const isFavourite = useCallback(
+    (professionalId) => favouriteIds.includes(professionalId),
+    [favouriteIds]
+  );
+
+  const recordProfileView = useCallback((professionalId) => {
+    setRecentIds((current) => {
+      const withoutDuplicate = current.filter((id) => id !== professionalId);
+      return [professionalId, ...withoutDuplicate].slice(0, 8);
+    });
+  }, []);
+
+  const reportProfile = useCallback((professionalId, reason, details = '') => {
+    setReports((current) => [
+      {
+        id: `report-${Date.now()}`,
+        professionalId,
+        reason,
+        details,
+        createdAt: new Date().toISOString(),
+        status: 'submitted',
+      },
+      ...current,
+    ]);
+  }, []);
+
+  const blockUser = useCallback((professionalId) => {
+    setBlockedIds((current) =>
+      current.includes(professionalId) ? current : [...current, professionalId]
+    );
+    setFavouriteIds((current) => current.filter((id) => id !== professionalId));
+    setActiveChatId((current) => (current === professionalId ? null : current));
+  }, []);
+
+  const unblockUser = useCallback((professionalId) => {
+    setBlockedIds((current) => current.filter((id) => id !== professionalId));
   }, []);
 
   const setPremium = useCallback((nextValue) => {
-    setPlan(nextValue ? 'premium' : 'free');
+    setPlan(nextValue ? 'pro' : 'free');
   }, []);
 
-  const resetDemo = useCallback(() => {
+  const resetDemo = useCallback(async () => {
     setPlan('free');
     setCredits(INITIAL_CREDITS);
     setRelationships(createInitialRelationships());
+    setFavouriteIds([]);
+    setRecentIds([]);
+    setEnquiries([]);
+    setReports([]);
+    setBlockedIds([]);
+    setSelectedLocation(DEFAULT_LOCATION);
     setActiveChatId(null);
     setPaywallVisible(false);
+
+    try {
+      await AsyncStorage.removeItem(STORAGE_KEY);
+    } catch {
+      // Ignore storage errors during reset.
+    }
   }, []);
 
   const value = {
-    currentUser: CURRENT_USER,
+    currentUser,
+    hydrated,
     plan,
+    planConfig,
+    planName: planConfig.name,
     isPremium,
+    isPaid,
     credits,
-    creditLabel: isPremium ? 'Unlimited' : `${credits} ${credits === 1 ? 'credit' : 'credits'}`,
+    creditLabel: isPaid ? 'Unlimited' : `${credits} ${credits === 1 ? 'credit' : 'credits'}`,
     professionals,
+    professionalMap,
     incomingRequests,
     outgoingRequests,
     connections,
     pendingCount: incomingRequests.length,
-    locationLabel,
+    favourites: favouriteProfessionals,
+    favouriteIds,
+    recentlyViewed: recentlyViewedProfessionals,
+    enquiries,
+    reports,
+    blockedIds,
+    selectedLocation,
+    locationLabel: formatLocationLabel(selectedLocation),
     locationStatus,
     isRefreshingLocation,
     refreshLocation,
+    setManualLocation,
     relationships,
     sendConnectionRequest,
     acceptRequest,
@@ -300,12 +559,19 @@ export function AppProvider({ children }) {
     activeChatId,
     activeChat,
     sendMessage,
+    sendEnquiry,
+    toggleFavourite,
+    isFavourite,
+    recordProfileView,
+    reportProfile,
+    blockUser,
+    unblockUser,
     isPaywallVisible,
     openPaywall,
     closePaywall,
-    purchasePlan,
     setPremium,
     resetDemo,
+    spendCredit,
   };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

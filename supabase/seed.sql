@@ -1,0 +1,6 @@
+-- Local demo seed hook.
+-- Reference categories, plans and credit packs are loaded by
+-- 20261105000600_reference_seed.sql so the hosted project stays consistent.
+--
+-- Add local-only auth users and professional profiles below when running
+-- `npx supabase db reset`. Never add real customer data to this file.

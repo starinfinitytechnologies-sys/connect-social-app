@@ -1,0 +1,51 @@
+package com.connectlocal.backend.professional;
+
+import java.util.List;
+import java.util.Map;
+
+public record ProfessionalSummaryResponse(
+        String id,
+        String userId,
+        String name,
+        String initials,
+        String profession,
+        String categoryId,
+        String category,
+        boolean regulated,
+        String headline,
+        double rating,
+        int reviewCount,
+        boolean verified,
+        String verificationLevel,
+        boolean identityVerified,
+        boolean qualificationVerified,
+        boolean online,
+        String availabilityStatus,
+        String nextSlot,
+        int experienceYears,
+        List<String> languages,
+        int pricingFrom,
+        Double distanceKm,
+        boolean withinServiceRadius,
+        String area,
+        String city,
+        String state,
+        Double latitude,
+        Double longitude,
+        double serviceRadiusKm,
+        String avatarUrl,
+        String avatarColor,
+        String avatarSoft,
+        boolean sponsored,
+        boolean trending,
+        boolean featured,
+        int completedEnquiries,
+        double responseRate,
+        String responseTime,
+        int profileViews,
+        int requestCount,
+        int profileCompleteness,
+        String whatsappNumber,
+        Map<String, Boolean> contactVisibility
+) {
+}

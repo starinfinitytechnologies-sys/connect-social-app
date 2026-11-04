@@ -1,7 +1,8 @@
 {
   "expo": {
-    "name": "connect-social-app",
+    "name": "Connect Local",
     "slug": "connect-social-app",
+    "scheme": "connectlocal",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -27,7 +28,8 @@
           "locationWhenInUsePermission": "Connect Local uses your location to show nearby professionals in your city or district."
         }
       ],
-      "expo-font"
+      "expo-font",
+      "expo-sqlite"
     ]
   }
 }
